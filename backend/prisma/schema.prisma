@@ -1,0 +1,388 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = []
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  customer
+  driver
+  dispatcher
+  manager
+  admin
+}
+
+enum ShipmentStatus {
+  PENDING
+  picked_up
+  in_transit
+  out_for_delivery
+  delivered
+  failed
+  returned
+}
+
+enum ServiceLevel {
+  standard
+  express
+  same_day
+}
+
+enum ScanType {
+  pickup
+  depot_checkin
+  depot_checkout
+  out_for_delivery
+  delivered
+  failed_attempt
+}
+
+enum VehicleType {
+  truck
+  van
+  bike
+}
+
+enum RouteStatus {
+  planned
+  active
+  completed
+  cancelled
+}
+
+enum IssueType {
+  damaged
+  missing
+  wrong_address
+  missed_delivery
+  delay
+  other
+}
+
+enum IssueStatus {
+  open
+  investigating
+  resolved
+  closed
+}
+
+enum EscalationStatus {
+  pending
+  triggered
+  acknowledged
+  resolved
+}
+
+enum ContactType {
+  email
+  sms
+  slack
+  phone
+}
+
+enum AgentSessionStatus {
+  active
+  completed
+  error
+}
+
+enum AgentChannel {
+  chat
+  voice
+}
+
+enum AggregationType {
+  ratio
+  count
+  avg
+}
+
+enum MetricDimension {
+  global
+  region
+  route
+  driver
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String // Auth
+  role      Role
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shipments                    Shipment[] // As customer
+  driverProfile                Driver?
+  dispatcherProfile            DispatcherProfile?
+  reportedIssues               DeliveryIssue[]
+  acknowledgments              Acknowledgment[]
+  agentSessions                AgentSession[]
+  dashboardConfigs             DashboardConfig[]
+  escalationContacts           EscalationContact[]
+  deliveryChangeRequests       DeliveryChangeRequest[] @relation("DeliveryChangeRequests")
+  reviewedDeliveryChangeRequests DeliveryChangeRequest[] @relation("ReviewedDeliveryChangeRequests")
+}
+
+model Shipment {
+  id                   String         @id @default(uuid())
+  trackingNumber       String         @unique
+  orderId              String?
+  customerId           String
+  customer             User           @relation(fields: [customerId], references: [id])
+  fromAddress          String
+  toAddress            String
+  currentStatus        ShipmentStatus @default(PENDING)
+  serviceLevel         ServiceLevel   @default(standard)
+  promisedDeliveryDate DateTime?
+  lastScanAt           DateTime?
+  lastScanLocation     String?
+  isVip                Boolean        @default(false)
+  slaRiskScore         Float          @default(0.0) // 0-1
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  scans                ShipmentScan[]
+  routeStops           RouteStop[]
+  deliveryIssues       DeliveryIssue[]
+  deliveryChangeRequests DeliveryChangeRequest[]
+  escalationLogs  EscalationLog[]
+  agentSessions   AgentSession[]
+  acknowledgments Acknowledgment[]
+}
+
+model ShipmentScan {
+  id         String   @id @default(uuid())
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+  scanType   ScanType
+  location   String
+  timestamp  DateTime @default(now())
+  notes      String?
+
+  @@index([shipmentId])
+  @@index([timestamp])
+}
+
+model Vehicle {
+  id             String      @id @default(uuid())
+  vehicleCode    String      @unique
+  capacityVolume Float
+  capacityWeight Float
+  homeBase       String
+  vehicleType    VehicleType @default(van)
+
+  routes  Route[]
+  drivers Driver[] // History or current assignment
+}
+
+model Driver {
+  id                String   @id @default(uuid())
+  driverCode        String   @unique
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id])
+  assignedVehicleId String?
+  assignedVehicle   Vehicle? @relation(fields: [assignedVehicleId], references: [id])
+  homeBase          String
+
+  routes Route[]
+}
+
+model DispatcherProfile {
+  id             String   @id @default(uuid())
+  dispatcherCode String   @unique
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id])
+  assignedRegion String // e.g., "NY-Depot", "CA-Depot", etc.
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Route {
+  id        String      @id @default(uuid())
+  routeCode String      @unique
+  date      DateTime    @db.Date
+  driverId  String?
+  driver    Driver?     @relation(fields: [driverId], references: [id])
+  vehicleId String?
+  vehicle   Vehicle?    @relation(fields: [vehicleId], references: [id])
+  region    String
+  status    RouteStatus @default(planned)
+
+  stops RouteStop[]
+
+  @@index([date])
+}
+
+model RouteStop {
+  id             String    @id @default(uuid())
+  routeId        String
+  route          Route     @relation(fields: [routeId], references: [id])
+  shipmentId     String
+  shipment       Shipment  @relation(fields: [shipmentId], references: [id])
+  sequenceNumber Int
+  plannedEta     DateTime?
+  actualArrival  DateTime?
+  status         String? // completed, failed, skipped
+
+  @@index([routeId])
+  @@index([shipmentId])
+}
+
+model DeliveryIssue {
+  id               String      @id @default(uuid())
+  shipmentId       String
+  shipment         Shipment    @relation(fields: [shipmentId], references: [id])
+  reportedByUserId String
+  reportedByUser   User        @relation(fields: [reportedByUserId], references: [id])
+  issueType        IssueType
+  description      String
+  aiSeverityScore  Float       @default(0.0)
+  status           IssueStatus @default(open)
+  resolutionNotes  String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  escalationLogs  EscalationLog[]
+  acknowledgments Acknowledgment[]
+}
+
+enum DeliveryChangeType {
+  reschedule
+  update_instructions
+  change_address
+}
+
+enum DeliveryChangeStatus {
+  pending
+  approved
+  rejected
+  applied
+}
+
+model DeliveryChangeRequest {
+  id               String              @id @default(uuid())
+  shipmentId       String
+  shipment         Shipment            @relation(fields: [shipmentId], references: [id])
+  requestedByUserId String
+  requestedByUser  User                @relation("DeliveryChangeRequests", fields: [requestedByUserId], references: [id])
+  changeType       DeliveryChangeType
+  newValue         String
+  newDate          DateTime?
+  status           DeliveryChangeStatus @default(pending)
+  notes            String?
+  reviewedByUserId String?
+  reviewedByUser   User?               @relation("ReviewedDeliveryChangeRequests", fields: [reviewedByUserId], references: [id])
+  reviewedAt       DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([shipmentId])
+  @@index([requestedByUserId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model EscalationContact {
+  id             String      @id @default(uuid())
+  userId         String
+  user           User        @relation(fields: [userId], references: [id])
+  position       String // e.g., "Shift Manager"
+  contactType    ContactType
+  timeoutSeconds Int
+  isActive       Boolean     @default(true)
+
+  escalationLogs EscalationLog[]
+}
+
+model EscalationLog {
+  id              String            @id @default(uuid())
+  shipmentId      String
+  shipment        Shipment          @relation(fields: [shipmentId], references: [id])
+  deliveryIssueId String?
+  deliveryIssue   DeliveryIssue?    @relation(fields: [deliveryIssueId], references: [id])
+  contactId       String
+  contact         EscalationContact @relation(fields: [contactId], references: [id])
+  attemptNumber   Int
+  eventType       String // triggered, advanced, acknowledged
+  payload         Json?
+  ackReceived     Boolean           @default(false)
+  ackMethod       String?
+  acknowledgedAt  DateTime?
+  createdAt       DateTime          @default(now())
+}
+
+model Acknowledgment {
+  id              String         @id @default(uuid())
+  shipmentId      String
+  shipment        Shipment       @relation(fields: [shipmentId], references: [id])
+  deliveryIssueId String?
+  deliveryIssue   DeliveryIssue? @relation(fields: [deliveryIssueId], references: [id])
+  userId          String
+  user            User           @relation(fields: [userId], references: [id])
+  method          String
+  notes           String?
+  createdAt       DateTime       @default(now())
+}
+
+model AgentSession {
+  id               String             @id @default(uuid())
+  userId           String?
+  user             User?              @relation(fields: [userId], references: [id])
+  role             String // User role or "customer_guest"
+  channel          AgentChannel
+  linkedShipmentId String?
+  linkedShipment   Shipment?          @relation(fields: [linkedShipmentId], references: [id])
+  openAiSessionId  String?
+  startedAt        DateTime           @default(now())
+  endedAt          DateTime?
+  status           AgentSessionStatus @default(active)
+  lastAgentName    String?
+  transcript       Json? // or String
+  outcome          Json?
+}
+
+model MetricDefinition {
+  id                   String          @id @default(uuid())
+  key                  String          @unique
+  name                 String
+  description          String?
+  aggregationType      AggregationType
+  dimension            MetricDimension
+  targetValue          Float
+  warningThreshold     Float?
+  criticalThreshold    Float?
+  ownerRole            Role            @default(admin)
+  isVisibleOnDashboard Boolean         @default(true)
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  snapshots MetricSnapshot[]
+}
+
+model MetricSnapshot {
+  id             String           @id @default(uuid())
+  metricId       String
+  metric         MetricDefinition @relation(fields: [metricId], references: [id])
+  value          Float
+  timeRangeStart DateTime
+  timeRangeEnd   DateTime
+  computedAt     DateTime         @default(now())
+  breakdown      Json?
+}
+
+model DashboardConfig {
+  id          String   @id @default(uuid())
+  ownerType   String // role, user
+  ownerRole   Role?
+  ownerUserId String?
+  ownerUser   User?    @relation(fields: [ownerUserId], references: [id])
+  layout      Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
